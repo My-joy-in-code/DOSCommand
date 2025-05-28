@@ -19,9 +19,20 @@
   ** so iCount can put it on www.torry.net.                          **
   *********************************************************************
 
-  History :
+History :
   ---------
 
+  05-27-2025 : changed by samso->www.delphipraxis.net
+  - asserts removed, OSExceptions are used instead
+  - Code added to read the last bytes of stdout after the process has ended
+  05-24-2025 : changed by samso->www.delphipraxis.net
+  - added property "Codepage" to set default text encoding and decoding in console
+  - Remove TCharDecoding and TCharEncoding - use TEncoding instead
+  - changed property TDosCommand.Lines: Now filled after excuting of the process
+  - TDosThread can used standalone
+  03-19-2024 : changed by ssamso->www.delphipraxis.net
+  - TTimeoutCalculator instead TProcessTimer to avoid the use of timers in TThread
+  - Timeout as floatingpoint for timeouts<1s
   06-21-2011 : version 2.03 (by sirius in www.delphi-treff.de || www.delphipraxis.net)
   (marked sirius2)
   - added property "current directory" to set for child process
@@ -139,6 +150,9 @@ interface
 uses
   System.SysUtils, System.Classes, System.SyncObjs, Winapi.Windows, Winapi.Messages;
 
+const
+  DefaultCLCodepage = 850;
+
 type
   EDosCommand = class(Exception); // MK: 20030613
 
@@ -154,42 +168,24 @@ type
     esError, // ended via Exception
     esTime); // ended because of time
 
-  // sirius2: added events for console unicode support
-  // only needed if console in child process has unicode characters (UTF-8, UTF-16,...)
-  // if these events are not implemented, TDosCommand treat console input and output as ANSI
-  // these events are NOT running in mainthread!!!!
-  TCharDecoding = function(ASender: TObject; ABuf: TStream): string of object; // convert input buf from console to string Result
-  TCharEncoding = procedure(ASender: TObject; const AChars: string; AOutBuf: TStream) of object; //convert input chars to outbuf-Stream
-
 type
-  // sirius2: replaced inherited TTimer (not threadsafe) with direct call to WinAPI
-  TProcessTimer = class(TObject) // timer for stopping the process after XXX sec
+  // Threadsave is not required as it is only used in TDosThread.
+  TTimeoutCalculator = record
   strict private
-    FCriticalSection: TCriticalSection;
-    FEnabled: Boolean; // sirius2
-    FEvent: TEvent;
-    FID: Integer; // sirius2
-    FSinceBeginning: Integer;
-    FSinceLastOutput: Integer;
-    function get_SinceBeginning: Integer;
-    function get_SinceLastOutput: Integer;
-    procedure set_Enabled(const AValue: Boolean);
-  private class var
-    FTimerInstances: TThreadList;
+    FSinceBeginning: Cardinal;
+    FSinceLastOutput: Cardinal;
+    fBeginTimeStamp: Cardinal;
+    fLastOutputTimeStamp: Cardinal;
+    const
+      MaxTimeToWait = 1000;
+    function GetTimeToWait: Cardinal;
+    function GetTimeout: Boolean;
   private
-    procedure MyTimer;
   public
-    class constructor Create;
-    constructor Create; reintroduce;
-    class destructor Destroy;
-    destructor Destroy; override;
-    procedure Beginning; // call this at the beginning of a process
-    procedure Ending; // call this when the process is terminated
+    procedure Beginning(LastOutput, SinceBeginning: Single); // call this at the beginning of a process
     procedure NewOutput; // call this when a New output is received
-    property Enabled: Boolean read FEnabled write set_Enabled;
-    property Event: TEvent read FEvent;
-    property SinceBeginning: Integer read get_SinceBeginning;
-    property SinceLastOutput: Integer read get_SinceLastOutput;
+    property TimeToWait: Cardinal read GetTimeToWait;
+    property Timeout: Boolean read GetTimeout;
   end;
 
   TNewLineEvent = procedure(ASender: TObject; const ANewLine: string; AOutputType: TOutputType) of object;
@@ -237,13 +233,13 @@ type
     // writes pipe input into TSyncString --> set event  --> TDosThread can read input
   strict private
     FEvent: TEvent;
-    FOnCharDecoding: TCharDecoding;
+    fEncoding: TEncoding;
     Fread_stdout, Fwrite_stdout: THandle;
     FSyncString: TSyncString;
   strict protected
     procedure Execute; override;
   public
-    constructor Create(AReadStdout, AWriteStdout: THandle; AOnCharDecoding: TCharDecoding); reintroduce;
+    constructor Create(AReadStdout, AWriteStdout: THandle; AEncoding: TEncoding); reintroduce;
     destructor Destroy; override;
     procedure Terminate; reintroduce;
     property Event: TEvent read FEvent;
@@ -259,13 +255,10 @@ type
     FCommandLine: string;
     FCurrentDir: string;
     FEnvironment: TStringList;
-    FInputLines: TInputLines;
+    FInputLines: TInputLines; // FiFo for Input
     FInputToOutput: Boolean;
     FLines: TStringList;
-    FMaxTimeAfterBeginning: Integer;
-    FMaxTimeAfterLastOutput: Integer;
-    FOnCharDecoding: TCharDecoding;
-    FOnCharEncoding: TCharEncoding;
+    fEncoding: TEncoding;
     FOnNewChar: TNewCharEvent;
     FOnNewLine: TNewLineEvent;
     FOnTerminateProcess: TTerminateProcessEvent;
@@ -274,8 +267,7 @@ type
     FPriority: Integer;
     FProcessInformation: TProcessInformation;
     FTerminateEvent: TEvent;
-    FTimer: TProcessTimer;
-    function DoCharDecoding(ASender: TObject; ABuf: TStream): string;
+    FTimer: TTimeoutCalculator;
     procedure DoEndStatus(AValue: TEndStatus);
     procedure DoLinesAdd(const AStr: string);
     procedure DoNewChar(AChar: Char);
@@ -289,10 +281,13 @@ type
     FCanTerminate: Boolean;
     procedure Execute; override;
   public
-    constructor Create(AOwner: TDosCommand; ACl, ACurrDir: string; ALines: TStringList; AOl: TStrings; ATimer: TProcessTimer; AMtab, AMtalo: Integer; AOnl: TNewLineEvent; AOnc: TNewCharEvent; Ot: TNotifyEvent; AOtp: TTerminateProcessEvent; Ap: Integer; Aito: Boolean; AEnv: TStrings; AOnCharDecoding: TCharDecoding; AOnCharEncoding: TCharEncoding); reintroduce;
+    constructor Create(AOwner: TDosCommand; const ACl, ACurrDir: string; AOl: TStrings;
+      AMaxO, AMaxB: Single; AOnl: TNewLineEvent; AOnc: TNewCharEvent; Ot: TNotifyEvent;
+      AOtp: TTerminateProcessEvent; Ap: Integer; Aito: Boolean; AEnv: TStrings; Encoding: TEncoding); reintroduce;
     destructor Destroy; override;
     procedure Terminate; reintroduce;
     property InputLines: TInputLines read FInputLines;
+    property Lines: TStringList read FLines;
   end;
 
   TDosCommand = class(TComponent) // the component to put on a form
@@ -303,10 +298,8 @@ type
     FExitCode: Cardinal;
     FInputToOutput: Boolean;
     FLines: TStringList;
-    FMaxTimeAfterBeginning: Integer;
-    FMaxTimeAfterLastOutput: Integer;
-    FOnCharDecoding: TCharDecoding; // sirius2
-    FOnCharEncoding: TCharEncoding; // sirius2
+    FMaxTimeAfterBeginning: Single;
+    FMaxTimeAfterLastOutput: Single;
     FonExecuteError: TErrorEvent;
     FOnNewChar: TNewCharEvent;
     FOnNewLine: TNewLineEvent;
@@ -315,17 +308,15 @@ type
     FOutputLines: TStrings;
     FPriority: Integer;
     FThread: TDosThread;
-    FTimer: TProcessTimer;
+    fEncoding: TEncoding;
+    fCodepage: Word;
     function get_EndStatus: TEndStatus;
     function get_IsRunning: Boolean;
-    procedure set_CharDecoding(const AValue: TCharDecoding);
-    procedure set_CharEncoding(const AValue: TCharEncoding);
   private
     FEndStatus: Integer;
     FProcessInformation: TProcessInformation;
+    procedure SetCodepage(const Value: Word);
   strict protected
-    function DoCharDecoding(ASender: TObject; ABuf: TStream): string; virtual;
-    procedure DoCharEncoding(ASender: TObject; const AChars: string; AOutBuf: TStream); virtual;
     procedure ThreadTerminated(ASender: TObject);
   public
     constructor Create(AOwner: TComponent); override;
@@ -345,10 +336,9 @@ type
     property CurrentDir: string read FCurrentDir write FCurrentDir; // currentdir for childprocess (if empty -> currentdir is same like currentdir in parent process), by sirius
     property Environment: TStrings read FEnvironment; // add Environment variables for process (if empty -> environment of parent process is used)
     property InputToOutput: Boolean read FInputToOutput write FInputToOutput; // check it if you want that the inputs appear also in the outputs
-    property MaxTimeAfterBeginning: Integer read FMaxTimeAfterBeginning write FMaxTimeAfterBeginning;
-    property MaxTimeAfterLastOutput: Integer read FMaxTimeAfterLastOutput write FMaxTimeAfterLastOutput;
-    property OnCharDecoding: TCharDecoding read FOnCharDecoding write set_CharDecoding;
-    property OnCharEncoding: TCharEncoding read FOnCharEncoding write set_CharEncoding; // Events to convert buf to (Unicode-)string and reverse !!not needed if console of child uses AnsiString!! This event is not threadsafe !!!! dont change during execution
+    property MaxTimeAfterBeginning: Single read FMaxTimeAfterBeginning write FMaxTimeAfterBeginning;
+    property MaxTimeAfterLastOutput: Single read FMaxTimeAfterLastOutput write FMaxTimeAfterLastOutput;
+    property Codepage: Word read fCodepage write SetCodepage default DefaultCLCodepage;
     property OnExecuteError: TErrorEvent read FonExecuteError write FonExecuteError; // event if DosCommand.execute is aborted via Exception
     property OnNewChar: TNewCharEvent read FOnNewChar write FOnNewChar; // event for each New char that is received through the pipe
     property OnNewLine: TNewLineEvent read FOnNewLine write FOnNewLine; // event for each New line that is received through the pipe
@@ -367,196 +357,118 @@ resourcestring
   SNoCommandLine = 'No Commandline to execute';
   SProcessError = 'Error creating Process: %s - (%s)';
   SPipeError = 'Error creating Pipe: %s';
-  SInstanceError = 'timer instance list not empty';
-  STimerSetError = 'could not start timer';
-  STimerKillError = 'could not kill timer';
 
-type
-  PTimer = ^TTimer;
+const
+  MaxBufSize = 1024;
 
-  TTimer = record
-    ID: Integer;
-    Inst: TProcessTimer;
-  end;
+function GetTickDiff(t1, t2: Cardinal): Cardinal; inline;
+begin
+  {$ifopt Q+}{$define recoveroverflowcheck}{$Q-}{$else}{$undef recoveroverflowcheck}{$endif}
+  Result := t2 - t1;
+  {$ifdef recoveroverflowcheck}{$Q+}{$endif}
+end;
 
-procedure TimerProc(AHwnd: HWND; AMsg: Integer; AEventID: Integer; ATime: Integer); stdcall;
+{ TTimeoutCalculator }
+
+procedure TTimeoutCalculator.Beginning(LastOutput, SinceBeginning: Single);
+begin
+  fBeginTimeStamp := GetTickCount;
+  fLastOutputTimeStamp := fBeginTimeStamp;
+  if (LastOutput>0) and (LastOutput<MAXDWORD div 1000)
+  then
+    fSinceLastOutput := trunc(LastOutput * 1000)
+  else
+    fSinceLastOutput := 0;
+  if (SinceBeginning>0) and (SinceBeginning<MAXDWORD div 1000)
+  then
+    fSinceBeginning := trunc(SinceBeginning * 1000)
+  else
+    fSinceBeginning := 0;
+end;
+
+function TTimeoutCalculator.GetTimeout: Boolean;
 var
-  iCount: Integer;
-  lTimer: PTimer;
-  pInst: TProcessTimer;
-  pList: TList;
+  Current: Cardinal;
 begin
-  // look for timerID in Timerinstances and find coresponding Instance of TProcesstimer
-  pInst := nil;
-  pList := TProcessTimer.FTimerInstances.LockList;
-  try
-    for iCount := 0 to pList.Count - 1 do
-    begin
-      lTimer := PTimer(pList[iCount]);
-      if lTimer^.ID = AEventID then
-      begin
-        pInst := lTimer^.Inst;
-        Break;
-      end;
-    end;
-  finally
-    TProcessTimer.FTimerInstances.UnlockList;
-  end;
-  if Assigned(pInst) then
-    pInst.MyTimer;
+  Current := GetTickCount;
+  if (FSinceLastOutput>0) and (GetTickDiff(fLastOutputTimeStamp, Current)>=FSinceLastOutput) then
+    Result := True
+  else
+  if (FSinceBeginning>0) and (GetTickDiff(fBeginTimeStamp, Current)>=FSinceBeginning) then
+    Result := True
+  else
+    Result := False;
+  {$ifdef debug}
+  if Result then
+    outputdebugstring('Timeout = true')
+  else
+    outputdebugstring('Timeout = false');
+  {$endif}
 end;
 
-{ TProcessTimer }
-
-class constructor TProcessTimer.Create;
-begin
-  FTimerInstances := TThreadList.Create;
-end;
-
-constructor TProcessTimer.Create;
-begin
-  inherited Create;
-  FCriticalSection := TCriticalSection.Create;
-  FEnabled := False; // timer is off
-  FEvent := TEvent.Create(nil, False, False, '');
-end;
-
-class destructor TProcessTimer.Destroy;
+function TTimeoutCalculator.GetTimeToWait: Cardinal;
 var
-  pList: TList;
+  Current: Cardinal;
+  LTime: Cardinal;
 begin
-  pList := FTimerInstances.LockList;
-  try
-    Assert(pList.Count = 0); // hopefully
-  finally
-    FTimerInstances.UnlockList;
-  end;
-  FTimerInstances.Free;
-end;
-
-destructor TProcessTimer.Destroy;
-begin
-  Enabled := False;
-  FEvent.Free;
-  FCriticalSection.Free;
-  inherited Destroy;
-end;
-
-procedure TProcessTimer.Beginning;
-begin
-  FSinceBeginning := 0; // this is the beginning
-  FSinceLastOutput := 0;
-  Enabled := True; // set the timer on
-end;
-
-procedure TProcessTimer.Ending;
-begin
-  Enabled := False; // set the timer off
-end;
-
-function TProcessTimer.get_SinceBeginning: Integer;
-begin
-  FCriticalSection.Enter;
-  try
-    Result := FSinceBeginning;
-  finally
-    FCriticalSection.Leave;
-  end;
-end;
-
-function TProcessTimer.get_SinceLastOutput: Integer;
-begin
-  FCriticalSection.Enter;
-  try
-    Result := FSinceLastOutput;
-  finally
-    FCriticalSection.Leave;
-  end;
-end;
-
-procedure TProcessTimer.MyTimer;
-begin
-  interlockedincrement(FSinceBeginning);
-  interlockedincrement(FSinceLastOutput);
-  FEvent.SetEvent;
-end;
-
-procedure TProcessTimer.NewOutput;
-begin
-  FCriticalSection.Enter;
-  try
-    FSinceLastOutput := 0; // a New output has been caught
-  finally
-    FCriticalSection.Leave;
-  end;
-end;
-
-procedure TProcessTimer.set_Enabled(const AValue: Boolean);
-var
-  timer: PTimer;
-  iCount: Integer;
-  pList: TList;
-begin
-  if FEnabled <> AValue then
+  Result := infinite;
+  Current := GetTickCount;
+  if FSinceLastOutput>0 then
   begin
-    FEnabled := AValue;
-    if FEnabled then
-    begin
-      // starttimer and save timer-id in TimerInstances
-      FID := SetTimer(0, 0, 1000, @TimerProc);
-      if FID = 0 then
-      begin
-        FEnabled := False;
-        raise EProcessTimer.CreateRes(@STimerSetError);
-      end
-      else
-      begin
-        New(timer);
-        timer^.ID := FID;
-        timer^.Inst := Self;
-        TProcessTimer.FTimerInstances.Add(timer);
-      end;
-    end
+    LTime := GetTickDiff(fLastOutputTimeStamp, Current);
+    if LTime>=FSinceLastOutput then // Timeout
+      Result := 0
     else
-      // stoptimer and delete timer-id in timerinstances
-      if not KillTimer(0, FID) then
-        raise EProcessTimer.CreateRes(@STimerKillError)
-      else
-      begin
-        pList := TProcessTimer.FTimerInstances.LockList;
-        try
-          for iCount := 0 to pList.Count - 1 do
-          begin
-            timer := PTimer(pList[iCount]);
-            if timer^.ID = FID then
-            begin
-              pList.Remove(timer);
-              Dispose(timer);
-              Break;
-            end;
-          end;
-        finally
-          TProcessTimer.FTimerInstances.UnlockList;
-        end;
-      end;
+      Result := FSinceLastOutput - LTime;
   end;
+  if (Result>0) and (FSinceBeginning>0) then
+  begin
+    LTime := GetTickDiff(fBeginTimeStamp, Current);
+    if LTime>=FSinceBeginning then // Timeout
+      Result := 0
+    else
+    begin
+      LTime := FSinceBeginning - LTime;
+      if LTime<Result then
+        Result := LTime
+    end;
+  end;
+  if Result>MaxTimeToWait
+  then
+    Result := MaxTimeToWait;
+  {$ifdef debug}
+  if Result=infinite
+  then
+    outputdebugstring('TimeToWait = infinite')
+  else
+    outputdebugstring(PChar(Format('TimeToWait = %f', [Result/1000])));
+  {$endif}
+end;
+
+procedure TTimeoutCalculator.NewOutput;
+begin
+  fLastOutputTimeStamp := GetTickCount;
 end;
 
 { TDosThread }
 
-constructor TDosThread.Create(AOwner: TDosCommand; ACl, ACurrDir: string; ALines: TStringList; AOl: TStrings; ATimer: TProcessTimer; AMtab, AMtalo: Integer; AOnl: TNewLineEvent; AOnc: TNewCharEvent; Ot: TNotifyEvent; AOtp: TTerminateProcessEvent; Ap: Integer; Aito: Boolean; AEnv: TStrings; AOnCharDecoding: TCharDecoding; AOnCharEncoding: TCharEncoding);
+constructor TDosThread.Create(AOwner: TDosCommand; const ACl, ACurrDir: string; AOl: TStrings;
+      AMaxO, AMaxB: Single; AOnl: TNewLineEvent; AOnc: TNewCharEvent; Ot: TNotifyEvent;
+      AOtp: TTerminateProcessEvent; Ap: Integer; Aito: Boolean; AEnv: TStrings; Encoding: TEncoding);
 begin
   inherited Create(False);
-  FOnCharEncoding := AOnCharEncoding;
-  FOnCharDecoding := AOnCharDecoding;
+  fEncoding := Encoding;
   FEnvironment := TStringList.Create;
-  FEnvironment.AddStrings(AEnv);
-  FreeOnTerminate := True;
-  FOwner := AOwner;
-  FOwner.FEndStatus := Ord(esStill_Active);
+  if AEnv<>nil then
+    FEnvironment.AddStrings(AEnv);
+  if AOwner<>nil then
+  begin
+    FOwner := AOwner;
+    FOwner.FEndStatus := Ord(esStill_Active);
+  end;
+  FLines := TStringList.Create;
   FCommandLine := ACl;
   FCurrentDir := ACurrDir;
-  FLines := ALines;
   FOutputLines := AOl;
   FInputLines := TInputLines.Create;
   FInputToOutput := Aito;
@@ -564,39 +476,36 @@ begin
   FOnNewChar := AOnc;
   FOnTerminateProcess := AOtp;
   Self.OnTerminate := Ot;
-  FTimer := ATimer;
-  FMaxTimeAfterBeginning := AMtab;
-  FMaxTimeAfterLastOutput := AMtalo;
+  FTimer.Beginning(AMaxO, AMaxB);
   FPriority := Ap;
   FTerminateEvent := TEvent.Create(nil, True, False, '');
 end;
 
 destructor TDosThread.Destroy;
 begin
+  inherited Destroy;
   FInputLines.Free;
+  FLines.Free;
   FTerminateEvent.Free;
   FEnvironment.Free;
-  inherited Destroy;
-end;
-
-function TDosThread.DoCharDecoding(ASender: TObject; ABuf: TStream): string;
-begin
-  Result := FOnCharDecoding(Self, ABuf);
 end;
 
 procedure TDosThread.DoEndStatus(AValue: TEndStatus);
 begin
-  TInterlocked.Exchange(FOwner.FEndStatus, Ord(AValue));
+  if FOwner<>nil then
+    TInterlocked.Exchange(FOwner.FEndStatus, Ord(AValue));
 end;
 
 procedure TDosThread.DoLinesAdd(const AStr: string);
 begin
-  Queue(procedure
-  begin
-    FLines.Add(AStr);
-	if Assigned(FOutputLines) then
-      FOutputLines.Add(AStr);
-  end);
+  FLines.Add(AStr);
+  if Assigned(FOutputLines)
+  then begin
+    Queue(procedure
+    begin
+    FOutputLines.Add(AStr);
+    end);
+  end;
 end;
 
 procedure TDosThread.DoNewChar(AChar: Char);
@@ -674,24 +583,22 @@ procedure TDosThread.DoSendLine(AWritePipe: THandle; var ALast: string; var ALin
 var
   sSends: string;
   bWrite: Cardinal;
-  pBuf: TMemoryStream;
+  pBuf: TBytes;
   sBuffer: string;
 begin
   sSends := FInputLines[0];
-  if (Copy(sSends, 1, 1) = '_') then
-    sSends := sSends + Char(13) + Char(10);
-  Delete(sSends, 1, 1);
 
-  if Length(sSends) > 0 then
+  if Length(sSends) > 1 then
   begin
-    pBuf := TMemoryStream.Create;
-    try
-      FOnCharEncoding(Self, sSends, pBuf);
-      Assert(WriteFile(AWritePipe, pBuf.memory^, pBuf.Size, bWrite, nil));
-      // send it to stdin
-    finally
-      pBuf.Free;
-    end;
+    // First Char of sSends is "_" or white space
+    if sSends[1] = '_' then
+      sSends := sSends + Char(13) + Char(10);
+    Delete(sSends, 1, 1);
+    pBuf := fEncoding.GetBytes(sSends);
+    // send it to stdin
+    if not WriteFile(AWritePipe, Pointer(pBuf)^, Length(pBuf), bWrite, nil)
+    then
+      System.SysUtils.RaiseLastOSError;
     if FInputToOutput then // if we have to output the inputs
     begin
       if Assigned(FOutputLines) then
@@ -740,8 +647,6 @@ begin
 end;
 
 procedure TDosThread.Execute;
-const
-  MaxBufSize = 1024;
 var
   si: TSTARTUPINFO;
   sa: PSECURITYATTRIBUTES; // security information for pipes
@@ -754,12 +659,13 @@ var
   envText: string;
   ReadPipeThread: TReadPipe;
   lpEnvironment: Pointer;
-  WaitHandles: array [0 .. 4] of THandle;
+  WaitHandles: array [0 .. 3] of THandle;
   iCount: Integer;
   pc, pc2: PChar;
 begin // Execute
   NameThreadForDebugging('TDosThread');
   try
+    FreeOnTerminate := Assigned(OnTerminate) or (fOwner<>nil);
     sa := nil;
     sd := nil;
     inputWritetmp := 0;
@@ -861,9 +767,6 @@ begin // Execute
         lpEnvironment := @envText[1];
       end;
 
-
-
-
       // spawn the child process
 
       if not(CreateProcess(nil, PChar(FCommandLine), nil, nil, True,
@@ -877,11 +780,14 @@ begin // Execute
           [FCommandLine, SysErrorMessage(getlasterror)]);
       end;
 
-      Queue(procedure
+      if FOwner<>nil then
       begin
-        FOwner.FProcessInformation := FProcessInformation;
-      end);
-      // take Processinformation to mainthread
+        Queue(procedure
+        begin
+          FOwner.FProcessInformation := FProcessInformation;
+        end);
+        // take Processinformation to mainthread
+      end;
 
       // sirius2: close unneeded handles
       if not CloseHandle(outputwrite) then
@@ -894,8 +800,7 @@ begin // Execute
         raise ECreatePipeError.CreateResFmt(@SPipeError,
           [SysErrorMessage(getlasterror)]);
 
-      ReadPipeThread := TReadPipe.Create(outputread, myoutputwrite,
-        DoCharDecoding);
+      ReadPipeThread := TReadPipe.Create(outputread, myoutputwrite, fEncoding);
 
       last := ''; // Buffer to save last output without finished with CRLF
       LineBeginned := False;
@@ -915,19 +820,19 @@ begin // Execute
           // Process-Ending (child)
           WaitHandles[3] := FTerminateEvent.Handle;
           // Termination of this thread (from mainthread)
-          WaitHandles[4] := FTimer.Event.Handle; // timer elapsed (each second)
 
-          case WaitforMultipleObjects(Length(WaitHandles), @WaitHandles, False,
-            infinite) of
-
+          case WaitforMultipleObjects(Length(WaitHandles), @WaitHandles, False, FTimer.TimeToWait) of
             Wait_Object_0 + 2:
               begin // Process terminated
+                {$ifdef Debug}
+                outputdebugstring('Process terminated');
+                {$endif}
                 GetExitCodeProcess(FProcessInformation.hProcess, FExitCode);
               end;
 
             Wait_Object_0 + 1:
               begin // InputEvent
-                if ((FInputLines.Count > 0) and not(Terminated)) then
+                if ((FInputLines.Count > 0) and not Terminated) then
                   DoSendLine(inputWrite, last, LineBeginned);
                 if FInputLines.Count > 0 then
                   FInputLines.Event.SetEvent;
@@ -938,15 +843,9 @@ begin // Execute
                 while ReadPipeThread.ReadString.Length > 0 do
                   DoReadLine(ReadPipeThread.ReadString, Str, last, LineBeginned);
               end;
-
           end;
 
-        until Terminated or ((FExitCode <> STILL_ACTIVE)
-          // process terminated (normally)
-          or ((FMaxTimeAfterBeginning < FTimer.SinceBeginning) and
-          (FMaxTimeAfterBeginning > 0)) // or time out
-          or ((FMaxTimeAfterLastOutput < FTimer.SinceLastOutput) and
-          (FMaxTimeAfterLastOutput > 0))); // or time out
+        until Terminated or (FExitCode <> STILL_ACTIVE) or FTimer.Timeout;
 
         if (FExitCode <> STILL_ACTIVE) then
         begin
@@ -974,6 +873,8 @@ begin // Execute
         GetExitCodeProcess(FProcessInformation.hProcess, FExitCode);
         ReadPipeThread.Terminate;
         ReadPipeThread.WaitFor;
+        while ReadPipeThread.ReadString.Length > 0 do
+          DoReadLine(ReadPipeThread.ReadString, Str, last, LineBeginned);
         ReadPipeThread.Free;
       end;
     finally
@@ -987,7 +888,9 @@ begin // Execute
   except
     on E: Exception do
     begin
+      {$ifdef debug}
       OutputDebugString(PChar('EXCEPTION: TDosThread ' + E.Message));
+      {$endif}
       DoEndStatus(esError);
       raise;
     end;
@@ -1008,72 +911,35 @@ begin
   FCommandLine := '';
   FCurrentDir := '';
   FLines := TStringList.Create;
-  FTimer := nil;
   FMaxTimeAfterBeginning := 0;
   FMaxTimeAfterLastOutput := 0;
   FPriority := NORMAL_PRIORITY_CLASS;
   FEndStatus := Ord(esNone);
   FEnvironment := TStringList.Create;
+  Codepage := DefaultCLCodepage;
 end;
 
 destructor TDosCommand.Destroy;
 begin
   Stop;
   FLines.Free;
-  FTimer.Free;
   FEnvironment.Free;
+  fEncoding.Free;
   inherited Destroy;
-end;
-
-function TDosCommand.DoCharDecoding(ASender: TObject; ABuf: TStream): string;
-var
-  pBytes: TBytes;
-  iLength: Integer;
-begin
-  if Assigned(FOnCharDecoding) then // ask for converting ABuf to string
-    Result := FOnCharDecoding(Self, ABuf)
-  else
-  begin // treat as ANSI
-    iLength := ABuf.Size;
-    if iLength > 0 then
-    begin
-      SetLength(pBytes, iLength);
-      ABuf.Read(pBytes, iLength);
-      Result := TEncoding.ANSI.GetString(pBytes);
-    end
-    else
-      Result := '';
-  end;
-end;
-
-procedure TDosCommand.DoCharEncoding(ASender: TObject; const AChars: string; AOutBuf: TStream);
-var
-  pBytes: TBytes;
-begin
-  if Assigned(FOnCharEncoding) then
-    FOnCharEncoding(Self, AChars, AOutBuf)
-  else if Length(AChars) > 0 then
-  begin
-    pBytes := TEncoding.ANSI.GetBytes(AChars);
-    AOutBuf.Write(pBytes, Length(pBytes)); // console is ANSI
-  end;
 end;
 
 procedure TDosCommand.Execute;
 begin
-  if FThread <> nil then
+  if IsRunning then
     raise EDosCommand.CreateRes(@SStillRunning);
 
   if FCommandLine = '' then // MK: 20030613
     raise EDosCommand.CreateRes(@SNoCommandLine);
-  if (FTimer = nil) then // create the timer (first call to execute)
-    FTimer := TProcessTimer.Create;
   FLines.Clear; // clear old outputs
-  FTimer.Beginning; // turn the timer on
-  FThread := TDosThread.Create(Self, FCommandLine, FCurrentDir, FLines,
-    FOutputLines, FTimer, FMaxTimeAfterBeginning, FMaxTimeAfterLastOutput,
+  FThread := TDosThread.Create(Self, FCommandLine, FCurrentDir, FOutputLines,
+    FMaxTimeAfterLastOutput, FMaxTimeAfterBeginning,
     FOnNewLine, FOnNewChar, ThreadTerminated, FOnTerminateProcess, FPriority,
-    FInputToOutput, FEnvironment, DoCharDecoding, DoCharEncoding);
+    FInputToOutput, FEnvironment, fEncoding);
 end;
 
 function TDosCommand.get_EndStatus: TEndStatus;
@@ -1096,20 +962,15 @@ begin
     raise EDosCommand.CreateRes(@SNotRunning);
 end;
 
-procedure TDosCommand.set_CharDecoding(const AValue: TCharDecoding);
+procedure TDosCommand.SetCodepage(const Value: Word);
 begin
-  if not IsRunning then
-    FOnCharDecoding := AValue
-  else
-    raise EDosCommand.CreateRes(@SStillRunning);
-end;
-
-procedure TDosCommand.set_CharEncoding(const AValue: TCharEncoding);
-begin
-  if not IsRunning then
-    FOnCharEncoding := AValue
-  else
-    raise EDosCommand.CreateRes(@SStillRunning);
+  if Value<>fCodepage
+  then begin
+    if not TEncoding.IsStandardEncoding(fEncoding) then
+      fEncoding.Free;
+    fEncoding := TEncoding.GetEncoding(Value);
+    fCodepage := Value;
+  end;
 end;
 
 procedure TDosCommand.Stop;
@@ -1134,26 +995,29 @@ var
   end;
 
 begin
-  FExitCode := (ASender as TDosThread).FExitCode;
-  FTimer.Ending;
-  if FThread.FreeOnTerminate then
-    FThread := nil;
-  if Assigned((ASender as TThread).FatalException) then
+  if (ASender is TDosThread) then
   begin
-    E := TThread(ASender).FatalException as Exception;
-    try
-      if Assigned(FonExecuteError) then
-      begin
-        handled := False;
-        FonExecuteError(Self, E, handled);
-        if not handled then
+    FExitCode := TDosThread(ASender).FExitCode;
+    FLines.AddStrings(TDosThread(ASender).Lines);
+    if (ASender=FThread) and FThread.FreeOnTerminate then
+      FThread := nil;
+    if Assigned(TDosThread(ASender).FatalException) then
+    begin
+      E := TThread(ASender).FatalException as Exception;
+      try
+        if Assigned(FonExecuteError) then
+        begin
+          handled := False;
+          FonExecuteError(Self, E, handled);
+          if not handled then
+            show(E);
+        end
+        else
           show(E);
-      end
-      else
-        show(E);
-    except
-      on E: Exception do
-        show(E);
+      except
+        on E: Exception do
+          show(E);
+      end;
     end;
   end;
   if Assigned(FOnTerminated) then
@@ -1308,10 +1172,10 @@ end;
 
 { TReadPipe }
 
-constructor TReadPipe.Create(AReadStdout, AWriteStdout: THandle; AOnCharDecoding: TCharDecoding);
+constructor TReadPipe.Create(AReadStdout, AWriteStdout: THandle; AEncoding: TEncoding);
 begin
   inherited Create(False);
-  FOnCharDecoding := AOnCharDecoding;
+  fEncoding := AEncoding;
   FEvent := TEvent.Create(nil, False, False, '');
   FSyncString := TSyncString.Create;
   Fread_stdout := AReadStdout;
@@ -1327,45 +1191,55 @@ begin
 end;
 
 procedure TReadPipe.Execute;
+  function AvailableBytes(var avail: Cardinal): Boolean;
+  begin
+    Result := PeekNamedPipe(Fread_stdout, nil, 0, nil, @avail, nil);
+  end;
 var
-  lBuf: array [0 .. 1023] of Byte;
-  lStream: TStream;
-  lBread: Cardinal;
+  LBytes: TBytes;
+  LByteCount: Cardinal;
+  LBuffSize: Cardinal;
+  Error: Cardinal;
+  Avail: Cardinal;
 begin
   try
+    LBuffSize := 128;
     NameThreadForDebugging('TReadPipe');
-    lStream := TMemoryStream.Create;
-    try
-      repeat
-        FillChar(lBuf, Length(lBuf), 0);
-        if not ReadFile(Fread_stdout, lBuf[0], Length(lBuf), lBread, nil) then
-        // wait for input
-          Assert(GetLastError = Error_broken_pipe);
-        if Terminated then
-          Break;
-        lStream.Size := 0;
-        lStream.Write(lBuf[0], lBread);
-        lStream.Seek(0, soFromBeginning);
-        FSyncString.Add(FOnCharDecoding(Self, lStream));
+    repeat
+      if AvailableBytes(Avail) and (Avail>LBuffSize) then
+        LBuffSize := Avail;
+      SetLength(LBytes, LBuffSize);
+      LByteCount := 0;
+      // wait for input
+      if not ReadFile(Fread_stdout, Pointer(LBytes)^, LBuffSize, LByteCount, nil) then
+      begin
+        Error := GetLastError;
+        if Error <> Error_broken_pipe then
+          System.SysUtils.RaiseLastOSError(Error);
+      end;
+      FSyncString.Add(fEncoding.GetString(LBytes, 0, LByteCount));
+      if not Terminated then
         FEvent.SetEvent;
-      until Terminated;
-    finally
-      lStream.Free;
-    end;
+    until Terminated and not(AvailableBytes(Avail) and (Avail>0));
   except
+    {$ifdef debug}
     on E: Exception do
       OutputDebugString(PChar('EXCEPTION: TReadPipe Execute ' + E.Message));
+    {$endif}
   end;
 end;
 
 procedure TReadPipe.Terminate;
 const
-  fin = 'fin';
+  fin: AnsiString = #0;
 var
   bwrite: Cardinal;
 begin
   inherited Terminate;
-  Assert(WriteFile(Fwrite_stdout, fin, Length(fin), bwrite, nil));
+  // write dummy string to stdout to trigger ReadFile.
+  if not WriteFile(Fwrite_stdout, Pointer(fin)^, Length(fin), bwrite, nil)
+  then
+    System.SysUtils.RaiseLastOSError;
 end;
 
 end.
