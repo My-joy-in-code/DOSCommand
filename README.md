@@ -2,7 +2,7 @@
 
 Changes:
 - Using codepage value (default 850 instead of Ansi) for encoding/decoding
-- The timeout is realized within the DosThread instead of via timer
+- The timeout is realized within the DosThread and not via a timer
 - Code added to read the last bytes of stdout after the process has ended
 
 # TurboPack DOSCommand
