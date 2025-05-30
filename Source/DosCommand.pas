@@ -16,12 +16,17 @@
   **   if you have a good idea of improvement, please                **
   ** let me know (maxime_collomb@yahoo.fr).                          **
   **   if you improve this component, please send me a Copy          **
-  ** so iCount can put it on www.torry.net.                          **
+  ** so i can put it on www.torry.net.                               **
   *********************************************************************
 
-History :
+  History :
   ---------
 
+  05-30-2025 : changed by samso->www.delphipraxis.net
+  - added GetOEMCodepage
+  - Char decoding and Char encoding uses now by default the Windows OEM Codepage
+  05-29-2025 : changed by samso->www.delphipraxis.net
+  - DoReadLine refactored
   05-27-2025 : changed by samso->www.delphipraxis.net
   - asserts removed, OSExceptions are used instead
   - Code added to read the last bytes of stdout after the process has ended
@@ -30,7 +35,7 @@ History :
   - Remove TCharDecoding and TCharEncoding - use TEncoding instead
   - changed property TDosCommand.Lines: Now filled after excuting of the process
   - TDosThread can used standalone
-  03-19-2024 : changed by ssamso->www.delphipraxis.net
+  03-19-2024 : changed by samso->www.delphipraxis.net
   - TTimeoutCalculator instead TProcessTimer to avoid the use of timers in TThread
   - Timeout as floatingpoint for timeouts<1s
   06-21-2011 : version 2.03 (by sirius in www.delphi-treff.de || www.delphipraxis.net)
@@ -148,10 +153,10 @@ unit DosCommand;
 interface
 
 uses
-  System.SysUtils, System.Classes, System.SyncObjs, Winapi.Windows, Winapi.Messages;
+  System.SysUtils, System.Classes, System.SyncObjs, Winapi.Windows, Winapi.Messages, registry;
 
 const
-  DefaultCLCodepage = 850;
+  DefaultOEMCodepage = 850;
 
 type
   EDosCommand = class(Exception); // MK: 20030613
@@ -169,7 +174,7 @@ type
     esTime); // ended because of time
 
 type
-  // Threadsave is not required as it is only used in TDosThread.
+  // Thread safety is not required as the TTimeoutCalculator is only used in TDosThread.
   TTimeoutCalculator = record
   strict private
     FSinceBeginning: Cardinal;
@@ -224,7 +229,7 @@ type
     procedure set_Value(const AValue: string);
   public
     procedure Add(const AValue: string);
-    procedure Delete(APos, ACount: Integer);
+    procedure Delete(ACount: Integer);
     function Length: Integer;
     property Value: string read get_Value write set_Value;
   end;
@@ -272,7 +277,7 @@ type
     procedure DoLinesAdd(const AStr: string);
     procedure DoNewChar(AChar: Char);
     procedure DoNewLine(const AStr: string; AOutputType: TOutputType);
-    procedure DoReadLine(AReadString: TSyncString; var AStr, ALast: string; var ALineBeginned: Boolean);
+    procedure DoReadLine(AReadString: TSyncString; var ALast: string; var ALineBeginned, CRFound: Boolean);
     procedure DoSendLine(AWritePipe: THandle; var ALast: string; var ALineBeginned: Boolean);
     procedure DoTerminateProcess;
   private
@@ -321,6 +326,7 @@ type
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
+    class function GetOEMCodepage: Word; static; // read OEM Codepage from registry
     procedure Execute; // the user call this to execute the command
     procedure SendLine(const AValue: string; AEol: Boolean); // add a line in the input pipe
     procedure Stop; // the user can stop the process with this method, stops process and waits
@@ -338,7 +344,7 @@ type
     property InputToOutput: Boolean read FInputToOutput write FInputToOutput; // check it if you want that the inputs appear also in the outputs
     property MaxTimeAfterBeginning: Single read FMaxTimeAfterBeginning write FMaxTimeAfterBeginning;
     property MaxTimeAfterLastOutput: Single read FMaxTimeAfterLastOutput write FMaxTimeAfterLastOutput;
-    property Codepage: Word read fCodepage write SetCodepage default DefaultCLCodepage;
+    property Codepage: Word read fCodepage write SetCodepage default DefaultOEMCodepage;
     property OnExecuteError: TErrorEvent read FonExecuteError write FonExecuteError; // event if DosCommand.execute is aborted via Exception
     property OnNewChar: TNewCharEvent read FOnNewChar write FOnNewChar; // event for each New char that is received through the pipe
     property OnNewLine: TNewLineEvent read FOnNewLine write FOnNewLine; // event for each New line that is received through the pipe
@@ -530,50 +536,63 @@ begin
   end;
 end;
 
-procedure TDosThread.DoReadLine(AReadString: TSyncString; var AStr, ALast: string; var ALineBeginned: Boolean);
+procedure TDosThread.DoReadLine(AReadString: TSyncString; var ALast: string; var ALineBeginned, CRFound: Boolean);
 var
-  sReads: string;
-  iCount, iLength: Integer;
+  Reads, Line: string;
+  ch: Char;
+  idx, LengthReads: Integer;
+  LengthLine: Integer;
+  CRIdx: Integer;
 begin
   // check to see if there is any data to read from stdout
-  sReads := AReadString.Value;
-  iLength := Length(sReads);
-  AReadString.Delete(1, iLength);
-
-  if iLength > 0 then
+  Reads := AReadString.Value;
+  LengthReads := Length(Reads);
+  if LengthReads > 0 then
   begin
-    AStr := ALast; // take the begin of the line (if exists)
-    for iCount := 1 to iLength do
+    AReadString.Delete(LengthReads);
+    Line := ALast; // take the begin of the line (if exists)
+    LengthLine := Length(ALast);
+    SetLength(Line, LengthLine + LengthReads); // set max possible length
+    CRIdx := -1;
+    if CRFound then
+      inc(CRIdx);
+    CRFound := false;
+    for idx := 1 to LengthReads do
     begin
       if Terminated then
         Exit;
 
-      DoNewChar(sReads[iCount]);
+      ch := Reads[idx];
+      DoNewChar(ch);
 
-      case sReads[iCount] of
-        Char(0):
-          begin // nothing
-          end;
-        Char(10), Char(13):
+      case ch of
+        Char(0): ;// ignore
+        Char(13): CRIdx := idx; // LF is expected next
+        Char(10):
           begin
-            if (iCount > 1) and (sReads[iCount] = Char(10)) and (sReads[iCount - 1] = Char(13))
-            then
-              Continue;
-            FTimer.NewOutput; // a New ouput has been caught
-            DoLinesAdd(AStr); // add the line
-            DoNewLine(AStr, otEntireLine);
-            AStr := '';
+            if idx=CRIdx+1 then
+            begin
+              FTimer.NewOutput; // a New ouput has been caught
+              SetLength(Line, LengthLine);
+              DoLinesAdd(Line); // add the line
+              DoNewLine(Line, otEntireLine);
+              SetLength(Line, LengthReads - idx);
+              LengthLine := 0;
+            end;
           end;
       else
         begin
-          AStr := AStr + sReads[iCount]; // add a character
+          inc(LengthLine);
+          Line[LengthLine] := ch; // add a character
         end;
       end;
     end;
-    ALast := AStr; // no CRLF found in the rest, maybe in the next output
-    if (ALast <> '') then
+    CRFound := (CRIdx = LengthReads); // The last character of Reads was a carriage return?
+    SetLength(Line, LengthLine);
+    ALast := Line; // no CRLF found in the rest, maybe in the next output
+    if (LengthLine>0) then
     begin
-      DoNewLine(AStr, otBeginningOfLine);
+      DoNewLine(Line, otBeginningOfLine);
       ALineBeginned := True;
     end;
   end
@@ -598,7 +617,7 @@ begin
     // send it to stdin
     if not WriteFile(AWritePipe, Pointer(pBuf)^, Length(pBuf), bWrite, nil)
     then
-      System.SysUtils.RaiseLastOSError;
+      RaiseLastOSError;
     if FInputToOutput then // if we have to output the inputs
     begin
       if Assigned(FOutputLines) then
@@ -653,8 +672,8 @@ var
   sd: PSECURITY_DESCRIPTOR;
   outputread, outputreadtmp, outputwrite, myoutputwrite, errorwrite, inputRead,
     inputWrite, inputWritetmp: THandle; // pipe handles
-  Str, last: string;
-  LineBeginned: Boolean;
+  last: string;
+  LineBeginned, LFFound: Boolean;
   currDir: PChar;
   envText: string;
   ReadPipeThread: TReadPipe;
@@ -841,7 +860,7 @@ begin // Execute
             Wait_Object_0 + 0:
               begin // ReadEvent
                 while ReadPipeThread.ReadString.Length > 0 do
-                  DoReadLine(ReadPipeThread.ReadString, Str, last, LineBeginned);
+                  DoReadLine(ReadPipeThread.ReadString, last, LineBeginned, LFFound);
               end;
           end;
 
@@ -862,20 +881,21 @@ begin // Execute
           DoTerminateProcess; // stop Process
         end;
 
-        if (last <> '') then
-        begin // If not empty flush last output
-          DoLinesAdd(last);
-          DoNewLine(last, otEntireLine);
-        end;
       finally
         if FCanTerminate then
           Waitforsingleobject(FProcessInformation.hProcess, 1000);
         GetExitCodeProcess(FProcessInformation.hProcess, FExitCode);
         ReadPipeThread.Terminate;
         ReadPipeThread.WaitFor;
+        // If not empty get last output from ReadPipeThread
         while ReadPipeThread.ReadString.Length > 0 do
-          DoReadLine(ReadPipeThread.ReadString, Str, last, LineBeginned);
+          DoReadLine(ReadPipeThread.ReadString, last, LineBeginned, LFFound);
         ReadPipeThread.Free;
+      end;
+      if (last <> '') then
+      begin // If not empty flush last output
+        DoLinesAdd(last);
+        DoNewLine(last, otEntireLine);
       end;
     finally
       FreeMem(sd);
@@ -906,6 +926,8 @@ end;
 { TDosCommand }
 
 constructor TDosCommand.Create(AOwner: TComponent);
+var
+  LCodepage: Word;
 begin
   inherited Create(AOwner);
   FCommandLine := '';
@@ -916,7 +938,11 @@ begin
   FPriority := NORMAL_PRIORITY_CLASS;
   FEndStatus := Ord(esNone);
   FEnvironment := TStringList.Create;
-  Codepage := DefaultCLCodepage;
+  LCodepage := GetOEMCodepage;
+  if LCodepage<>0 then
+    Codepage := LCodepage
+  else
+    Codepage := DefaultOEMCodepage;
 end;
 
 destructor TDosCommand.Destroy;
@@ -942,6 +968,24 @@ begin
     FInputToOutput, FEnvironment, fEncoding);
 end;
 
+class function TDosCommand.GetOEMCodepage: Word;
+const
+  CodepageKey = '\SYSTEM\CurrentControlSet\Control\Nls\CodePage';
+var
+  Reg: TRegistry;
+begin
+  Reg := TRegistry.Create(KEY_READ);
+  try
+    Reg.RootKey := HKEY_LOCAL_MACHINE;
+    if Reg.OpenKey(CodepageKey, False) then
+      Result := StrToIntDef(Reg.ReadString('OEMCP'), 0)
+    else
+      Result := 0;
+  finally
+    Reg.Free
+  end;
+end;
+
 function TDosCommand.get_EndStatus: TEndStatus;
 begin
   Result := TEndStatus(FEndStatus);
@@ -964,12 +1008,15 @@ end;
 
 procedure TDosCommand.SetCodepage(const Value: Word);
 begin
-  if Value<>fCodepage
+  if (Value<>fCodepage)
   then begin
     if not TEncoding.IsStandardEncoding(fEncoding) then
       fEncoding.Free;
-    fEncoding := TEncoding.GetEncoding(Value);
-    fCodepage := Value;
+    if Value=CP_ACP then
+      fEncoding := TEncoding.Default
+    else
+      fEncoding := TEncoding.GetEncoding(Value);
+    fCodepage := fEncoding.CodePage;
   end;
 end;
 
@@ -1130,11 +1177,11 @@ begin
   end;
 end;
 
-procedure TSyncString.Delete(APos, ACount: Integer);
+procedure TSyncString.Delete(ACount: Integer);
 begin
   BeginWrite;
   try
-    System.Delete(FValue, APos, ACount);
+    System.Delete(FValue, 1, ACount);
   finally
     EndWrite;
   end;
@@ -1215,7 +1262,7 @@ begin
       begin
         Error := GetLastError;
         if Error <> Error_broken_pipe then
-          System.SysUtils.RaiseLastOSError(Error);
+          RaiseLastOSError(Error);
       end;
       FSyncString.Add(fEncoding.GetString(LBytes, 0, LByteCount));
       if not Terminated then
@@ -1237,9 +1284,8 @@ var
 begin
   inherited Terminate;
   // write dummy string to stdout to trigger ReadFile.
-  if not WriteFile(Fwrite_stdout, Pointer(fin)^, Length(fin), bwrite, nil)
-  then
-    System.SysUtils.RaiseLastOSError;
+  if not WriteFile(Fwrite_stdout, Pointer(fin)^, Length(fin), bwrite, nil) then
+    RaiseLastOSError;
 end;
 
 end.
