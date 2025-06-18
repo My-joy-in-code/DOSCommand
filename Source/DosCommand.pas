@@ -22,9 +22,14 @@
   History :
   ---------
 
+  06-19-2025 : changed by samso->www.delphipraxis.net
+  - revert EOL-Detection in DoReadLine
+  - Environment handling refactored
+  05-31-2025 : changed by samso->www.delphipraxis.net
+  - recover WaitFor in TDosCommand.Stop to avoid memory leaks during application termination
   05-30-2025 : changed by samso->www.delphipraxis.net
   - added GetOEMCodepage
-  - Char decoding and Char encoding uses now by default the Windows OEM Codepage
+  - Char decoding and encoding uses now by default the Windows OEM Codepage
   05-29-2025 : changed by samso->www.delphipraxis.net
   - DoReadLine refactored
   05-27-2025 : changed by samso->www.delphipraxis.net
@@ -156,7 +161,7 @@ uses
   System.SysUtils, System.Classes, System.SyncObjs, Winapi.Windows, Winapi.Messages, registry;
 
 const
-  DefaultOEMCodepage = 850;
+  DefaultOEMCodepage = 850;  // if not found in Registry
 
 type
   EDosCommand = class(Exception); // MK: 20030613
@@ -259,7 +264,7 @@ type
   strict private
     FCommandLine: string;
     FCurrentDir: string;
-    FEnvironment: TStringList;
+    FEnvironment: String;
     FInputLines: TInputLines; // FiFo for Input
     FInputToOutput: Boolean;
     FLines: TStringList;
@@ -277,7 +282,7 @@ type
     procedure DoLinesAdd(const AStr: string);
     procedure DoNewChar(AChar: Char);
     procedure DoNewLine(const AStr: string; AOutputType: TOutputType);
-    procedure DoReadLine(AReadString: TSyncString; var ALast: string; var ALineBeginned, CRFound: Boolean);
+    procedure DoReadLine(AReadString: TSyncString; var ALast: string; var ALineBeginned: Boolean);
     procedure DoSendLine(AWritePipe: THandle; var ALast: string; var ALineBeginned: Boolean);
     procedure DoTerminateProcess;
   private
@@ -326,30 +331,53 @@ type
   public
     constructor Create(AOwner: TComponent); override;
     destructor Destroy; override;
-    class function GetOEMCodepage: Word; static; // read OEM Codepage from registry
-    procedure Execute; // the user call this to execute the command
-    procedure SendLine(const AValue: string; AEol: Boolean); // add a line in the input pipe
-    procedure Stop; // the user can stop the process with this method, stops process and waits
+    ///<summary>read OEM Codepage from registry</summary>
+    class function GetOEMCodepage: Word; static;
+    ///<summary>the user call this to execute the command</summary>
+    procedure Execute;
+    ///<summary>add a line in the input pipe</summary>
+    procedure SendLine(const AValue: string; AEol: Boolean);
+    ///<summary>the user can stop the process with this method. Stops process and waits until end</summary>
+    procedure Stop(Wait: Boolean=False);
     property EndStatus: TEndStatus read get_EndStatus;
     property ExitCode: Cardinal read FExitCode;
-    property IsRunning: Boolean read get_IsRunning; // When true, a command is still running // MK: 20030613
-    property Lines: TStringList read FLines; // if the user want to access all the outputs of a process, he can use this property, lines is deleted before execution
-    property OutputLines: TStrings read FOutputLines write FOutputLines; // can be lines of a memo, a richedit, a listbox, ...
-    property Priority: Integer read FPriority write FPriority; // stops process and waits, only for createprocess
-    property ProcessInformation: TProcessInformation read FProcessInformation; // Processinformation from createprocess
+    ///<summary>When true, a command is still running // MK: 20030613</summary>
+    property IsRunning: Boolean read get_IsRunning;
+    ///<summary>if the user want to access all the outputs of a process, he can use this property.
+    /// Lines is deleted before execution and filled after execution</summary>
+    property Lines: TStringList read FLines;
+    ///<summary>can be lines of a memo, a richedit, a listbox, ...</summary>
+    property OutputLines: TStrings read FOutputLines write FOutputLines;
+    ///<summary>stops process and waits, only for createprocess</summary>
+    property Priority: Integer read FPriority write FPriority;
+    ///<summary>Processinformation from createprocess</summary>
+    property ProcessInformation: TProcessInformation read FProcessInformation;
+    ///<summary>Codepage for character encoding and decoding</summary>
+    property Codepage: Word read fCodepage write SetCodepage;
   published
-    property CommandLine: string read FCommandLine write FCommandLine; // command to execute
-    property CurrentDir: string read FCurrentDir write FCurrentDir; // currentdir for childprocess (if empty -> currentdir is same like currentdir in parent process), by sirius
-    property Environment: TStrings read FEnvironment; // add Environment variables for process (if empty -> environment of parent process is used)
-    property InputToOutput: Boolean read FInputToOutput write FInputToOutput; // check it if you want that the inputs appear also in the outputs
+    ///<summary>command to execute</summary>
+    property CommandLine: string read FCommandLine write FCommandLine;
+    ///<summary>currentdir for childprocess (if empty -> currentdir is
+    /// same like currentdir in parent process), by sirius</summary>
+    property CurrentDir: string read FCurrentDir write FCurrentDir;
+    ///<summary>add Environment variables for process (if empty -> environment of parent process is used)</summary>
+    property Environment: TStrings read FEnvironment;
+    ///<summary>check it if you want that the inputs appear also in the outputs</summary>
+    property InputToOutput: Boolean read FInputToOutput write FInputToOutput;
+    ///<summary>Time in seconds until the process is stopped</summary>
     property MaxTimeAfterBeginning: Single read FMaxTimeAfterBeginning write FMaxTimeAfterBeginning;
+    ///<summary>Time in seconds after the last output until the process is stopped</summary>
     property MaxTimeAfterLastOutput: Single read FMaxTimeAfterLastOutput write FMaxTimeAfterLastOutput;
-    property Codepage: Word read fCodepage write SetCodepage default DefaultOEMCodepage;
-    property OnExecuteError: TErrorEvent read FonExecuteError write FonExecuteError; // event if DosCommand.execute is aborted via Exception
-    property OnNewChar: TNewCharEvent read FOnNewChar write FOnNewChar; // event for each New char that is received through the pipe
-    property OnNewLine: TNewLineEvent read FOnNewLine write FOnNewLine; // event for each New line that is received through the pipe
-    property OnTerminated: TNotifyEvent read FOnTerminated write FOnTerminated; // event for the end of the process (normally, time out or by user (DosCommand.Stop;))
-    property OnTerminateProcess: TTerminateProcessEvent read FOnTerminateProcess write FOnTerminateProcess; // event to ask for processtermination
+    ///<summary>event if DosCommand.execute is aborted via Exception</summary>
+    property OnExecuteError: TErrorEvent read FonExecuteError write FonExecuteError;
+    ///<summary>event for each New char that is received through the pipe</summary>
+    property OnNewChar: TNewCharEvent read FOnNewChar write FOnNewChar;
+    ///<summary>event for each New line that is received through the pipe</summary>
+    property OnNewLine: TNewLineEvent read FOnNewLine write FOnNewLine;
+    ///<summary>event for the end of the process (normally, time out or by user (DosCommand.Stop;))</summary>
+    property OnTerminated: TNotifyEvent read FOnTerminated write FOnTerminated;
+    ///<summary>event to ask for processtermination</summary>
+    property OnTerminateProcess: TTerminateProcessEvent read FOnTerminateProcess write FOnTerminateProcess;
   end;
 
 implementation
@@ -366,6 +394,12 @@ resourcestring
 
 const
   MaxBufSize = 1024;
+  fin: String = #0;
+
+procedure RaisePipeError;
+begin
+  raise ECreatePipeError.CreateResFmt(@SPipeError, [SysErrorMessage(GetLastError)]);
+end;
 
 function GetTickDiff(t1, t2: Cardinal): Cardinal; inline;
 begin
@@ -456,6 +490,70 @@ begin
   fLastOutputTimeStamp := GetTickCount;
 end;
 
+function GetEnvironmentLength(p: PChar): Integer;
+// Length without list termination char (#0)
+// GetEnvironmentLength('ABC'#0'EFG'#0#0) = 8
+var
+  L: Integer;
+  prev: Char;
+begin
+  if p=nil then
+    exit(0);
+  L := 0;
+  repeat
+    inc(L);
+    prev := p^;
+    inc(p);
+  until (prev=#0) and (p^=#0);
+  Result := L;
+end;
+
+function GetEnvironment(List: TStrings): string;
+var
+  lpEnvironment: PChar;
+  EnvLength: Integer;
+  TxtLength: Integer;
+  i: Integer;
+  pEnvText: PChar;
+begin
+  // set environment variables and add parent env
+  if List.Count = 0 then
+    Result := ''
+  else
+  begin
+    // Calc length of text including #0 characters
+    TxtLength := List.Count + 1;
+    for i := 0 to List.Count - 1 do
+      inc(TxtLength, Length(List[i]));
+    lpEnvironment := GetEnvironmentStrings;
+    try
+      EnvLength := GetEnvironmentLength(lpEnvironment);
+      if EnvLength>0 then
+      begin
+        inc(TxtLength, EnvLength);
+        SetLength(Result, TxtLength);
+        pEnvText := Pointer(Result);
+        StrMove(pEnvText, lpEnvironment, EnvLength);
+        inc(pEnvText, EnvLength);
+      end
+      else
+      begin
+        SetLength(Result, TxtLength);
+        pEnvText := Pointer(Result);
+      end
+    finally
+      freeEnvironmentStrings(lpEnvironment);
+    end;
+
+    for i := 0 to List.Count - 1 do
+    begin
+      StrPCopy(pEnvText, List[i]);
+      inc(pEnvText, Length(List[i])+1); // skip #0
+    end;
+    pEnvText^ := #0; // Append End of List
+  end;
+end;
+
 { TDosThread }
 
 constructor TDosThread.Create(AOwner: TDosCommand; const ACl, ACurrDir: string; AOl: TStrings;
@@ -464,9 +562,7 @@ constructor TDosThread.Create(AOwner: TDosCommand; const ACl, ACurrDir: string; 
 begin
   inherited Create(False);
   fEncoding := Encoding;
-  FEnvironment := TStringList.Create;
-  if AEnv<>nil then
-    FEnvironment.AddStrings(AEnv);
+  FEnvironment := GetEnvironment(AEnv);
   if AOwner<>nil then
   begin
     FOwner := AOwner;
@@ -493,7 +589,6 @@ begin
   FInputLines.Free;
   FLines.Free;
   FTerminateEvent.Free;
-  FEnvironment.Free;
 end;
 
 procedure TDosThread.DoEndStatus(AValue: TEndStatus);
@@ -536,27 +631,27 @@ begin
   end;
 end;
 
-procedure TDosThread.DoReadLine(AReadString: TSyncString; var ALast: string; var ALineBeginned, CRFound: Boolean);
+procedure TDosThread.DoReadLine(AReadString: TSyncString; var ALast: string; var ALineBeginned: Boolean);
 var
   Reads, Line: string;
-  ch: Char;
-  idx, LengthReads: Integer;
+  idx: Integer;
+  LengthReads: Integer;
   LengthLine: Integer;
-  CRIdx: Integer;
+  ch: Char;
+  EOL: Boolean;
 begin
   // check to see if there is any data to read from stdout
   Reads := AReadString.Value;
   LengthReads := Length(Reads);
-  if LengthReads > 0 then
+  if (LengthReads > 0) then
   begin
     AReadString.Delete(LengthReads);
+    if (Reads=fin)
+    then
+      exit;
     Line := ALast; // take the begin of the line (if exists)
     LengthLine := Length(ALast);
     SetLength(Line, LengthLine + LengthReads); // set max possible length
-    CRIdx := -1;
-    if CRFound then
-      inc(CRIdx);
-    CRFound := false;
     for idx := 1 to LengthReads do
     begin
       if Terminated then
@@ -564,32 +659,29 @@ begin
 
       ch := Reads[idx];
       DoNewChar(ch);
-
+      EOL := False;
       case ch of
         Char(0): ;// ignore
-        Char(13): CRIdx := idx; // LF is expected next
-        Char(10):
-          begin
-            if idx=CRIdx+1 then
-            begin
-              FTimer.NewOutput; // a New ouput has been caught
-              SetLength(Line, LengthLine);
-              DoLinesAdd(Line); // add the line
-              DoNewLine(Line, otEntireLine);
-              SetLength(Line, LengthReads - idx);
-              LengthLine := 0;
-            end;
-          end;
+        Char(13): EOL := True;
+        Char(10): EOL := (idx=1) or (Reads[idx-1]<>Char(13));
       else
         begin
           inc(LengthLine);
           Line[LengthLine] := ch; // add a character
         end;
       end;
+      if EOL then
+      begin
+        FTimer.NewOutput; // a New ouput has been caught
+        SetLength(Line, LengthLine);
+        DoLinesAdd(Line); // add the line
+        DoNewLine(Line, otEntireLine);
+        SetLength(Line, LengthReads - idx);
+        LengthLine := 0;
+      end;
     end;
-    CRFound := (CRIdx = LengthReads); // The last character of Reads was a carriage return?
     SetLength(Line, LengthLine);
-    ALast := Line; // no CRLF found in the rest, maybe in the next output
+    ALast := Line; // no EOL found in the rest, maybe in the next output
     if (LengthLine>0) then
     begin
       DoNewLine(Line, otBeginningOfLine);
@@ -671,16 +763,13 @@ var
   sa: PSECURITYATTRIBUTES; // security information for pipes
   sd: PSECURITY_DESCRIPTOR;
   outputread, outputreadtmp, outputwrite, myoutputwrite, errorwrite, inputRead,
-    inputWrite, inputWritetmp: THandle; // pipe handles
+    inputWrite, inputWritetmp, MyProcessHandle: THandle; // pipe handles
   last: string;
-  LineBeginned, LFFound: Boolean;
+  LineBeginned: Boolean;
   currDir: PChar;
-  envText: string;
   ReadPipeThread: TReadPipe;
   lpEnvironment: Pointer;
   WaitHandles: array [0 .. 3] of THandle;
-  iCount: Integer;
-  pc, pc2: PChar;
 begin // Execute
   NameThreadForDebugging('TDosThread');
   try
@@ -704,41 +793,33 @@ begin // Execute
       end;
       sa.nLength := sizeof(SECURITY_ATTRIBUTES);
       sa.bInheritHandle := True; // allow inheritable handles
-
+      MyProcessHandle := GetCurrentProcess;
       // sirius2: Pipe creation changed to microsoft knowledge base article ID: 190351
       if not(CreatePipe(outputreadtmp, outputwrite, sa, 0)) then
-        raise ECreatePipeError.CreateResFmt(@SPipeError,
-          [SysErrorMessage(getlasterror)]);
+        RaisePipeError;
 
-      if not(DuplicateHandle(GetCurrentProcess, outputwrite, GetCurrentProcess,
+      if not(DuplicateHandle(MyProcessHandle, outputwrite, MyProcessHandle,
         @errorwrite, 0, True, DUPLICATE_SAME_ACCESS)) then
-        raise ECreatePipeError.CreateResFmt(@SPipeError,
-          [SysErrorMessage(getlasterror)]);
-      if not(DuplicateHandle(GetCurrentProcess, outputwrite, GetCurrentProcess,
+        RaisePipeError;
+      if not(DuplicateHandle(MyProcessHandle, outputwrite, MyProcessHandle,
         @myoutputwrite, 0, False, DUPLICATE_SAME_ACCESS)) then
-        raise ECreatePipeError.CreateResFmt(@SPipeError,
-          [SysErrorMessage(getlasterror)]);
+        RaisePipeError;
 
       if not(CreatePipe(inputRead, inputWritetmp, sa, 0)) then
-        raise ECreatePipeError.CreateResFmt(@SPipeError,
-          [SysErrorMessage(getlasterror)]);
+        RaisePipeError;
 
-      if not(DuplicateHandle(GetCurrentProcess, outputreadtmp,
-        GetCurrentProcess, @outputread, 0, False, DUPLICATE_SAME_ACCESS)) then
-        raise ECreatePipeError.CreateResFmt(@SPipeError,
-          [SysErrorMessage(getlasterror)]);
+      if not(DuplicateHandle(MyProcessHandle, outputreadtmp,
+        MyProcessHandle, @outputread, 0, False, DUPLICATE_SAME_ACCESS)) then
+        RaisePipeError;
 
-      if not(DuplicateHandle(GetCurrentProcess, inputWritetmp,
-        GetCurrentProcess, @inputWrite, 0, False, DUPLICATE_SAME_ACCESS)) then
-        raise ECreatePipeError.CreateResFmt(@SPipeError,
-          [SysErrorMessage(getlasterror)]);
+      if not(DuplicateHandle(MyProcessHandle, inputWritetmp,
+        MyProcessHandle, @inputWrite, 0, False, DUPLICATE_SAME_ACCESS)) then
+        RaisePipeError;
 
       if not CloseHandle(outputreadtmp) then
-        raise ECreatePipeError.CreateResFmt(@SPipeError,
-          [SysErrorMessage(getlasterror)]);
+        RaisePipeError;
       if not CloseHandle(inputWritetmp) then
-        raise ECreatePipeError.CreateResFmt(@SPipeError,
-          [SysErrorMessage(getlasterror)]);
+        RaisePipeError;
 
       GetStartupInfo(si); // set startupinfo for the spawned process
       { The dwFlags member tells CreateProcess how to make the process.
@@ -746,8 +827,9 @@ begin // Execute
         validates the wShowWindow member. }
       si.dwFlags := STARTF_USESTDHANDLES or STARTF_USESHOWWINDOW;
       si.wShowWindow := SW_HIDE;
+      // set the New handles for the child process
       si.hStdOutput := outputwrite;
-      si.hStdError := errorwrite; // set the New handles for the child process
+      si.hStdError := errorwrite;
       si.hStdInput := inputRead;
 
       if FCurrentDir = '' then
@@ -755,36 +837,7 @@ begin // Execute
       else
         currDir := PChar(FCurrentDir);
 
-      // set Environment variables and add parent env
-      if FEnvironment.Count = 0 then
-        lpEnvironment := nil
-      else
-      begin
-        lpEnvironment := GetEnvironmentStrings;
-        pc := lpEnvironment;
-        try
-          // environmentstrings are devided bei #0
-          envText := '';
-          pc2 := pc;
-          Inc(pc2);
-          while (pc^ <> Char(0)) or (pc2^ <> Char(0)) do
-          // two null-characters (#0) is end of strings
-          begin
-            envText := envText + pc^;
-            Inc(pc);
-            Inc(pc2);
-          end;
-        finally
-          freeEnvironmentStrings(lpEnvironment);
-        end;
-        if Length(envText) > 0 then
-          envText := envText + Char(0);
-
-        for iCount := 0 to FEnvironment.Count - 1 do
-          envText := envText + FEnvironment[iCount] + Char(0);
-        envText := envText + Char(0);
-        lpEnvironment := @envText[1];
-      end;
+      lpEnvironment := Pointer(FEnvironment);
 
       // spawn the child process
 
@@ -810,18 +863,15 @@ begin // Execute
 
       // sirius2: close unneeded handles
       if not CloseHandle(outputwrite) then
-        raise ECreatePipeError.CreateResFmt(@SPipeError,
-          [SysErrorMessage(getlasterror)]);
+        RaisePipeError;
       if not CloseHandle(inputRead) then
-        raise ECreatePipeError.CreateResFmt(@SPipeError,
-          [SysErrorMessage(getlasterror)]);
+        RaisePipeError;
       if not CloseHandle(errorwrite) then
-        raise ECreatePipeError.CreateResFmt(@SPipeError,
-          [SysErrorMessage(getlasterror)]);
+        RaisePipeError;
 
       ReadPipeThread := TReadPipe.Create(outputread, myoutputwrite, fEncoding);
 
-      last := ''; // Buffer to save last output without finished with CRLF
+      last := ''; // Buffer to save last output without finished with EOL
       LineBeginned := False;
 
       GetExitCodeProcess(FProcessInformation.hProcess, FExitCode);
@@ -860,7 +910,7 @@ begin // Execute
             Wait_Object_0 + 0:
               begin // ReadEvent
                 while ReadPipeThread.ReadString.Length > 0 do
-                  DoReadLine(ReadPipeThread.ReadString, last, LineBeginned, LFFound);
+                  DoReadLine(ReadPipeThread.ReadString, last, LineBeginned);
               end;
           end;
 
@@ -889,7 +939,7 @@ begin // Execute
         ReadPipeThread.WaitFor;
         // If not empty get last output from ReadPipeThread
         while ReadPipeThread.ReadString.Length > 0 do
-          DoReadLine(ReadPipeThread.ReadString, last, LineBeginned, LFFound);
+          DoReadLine(ReadPipeThread.ReadString, last, LineBeginned);
         ReadPipeThread.Free;
       end;
       if (last <> '') then
@@ -901,9 +951,12 @@ begin // Execute
       FreeMem(sd);
       FreeMem(sa);
 
-      CloseHandle(outputread);
-      CloseHandle(inputWrite);
-      CloseHandle(myoutputwrite);
+      if not CloseHandle(outputread) then
+        RaisePipeError;
+      if not CloseHandle(inputWrite) then
+        RaisePipeError;
+      if not CloseHandle(myoutputwrite) then
+        RaisePipeError;
     end;
   except
     on E: Exception do
@@ -947,10 +1000,11 @@ end;
 
 destructor TDosCommand.Destroy;
 begin
-  Stop;
+  Stop(True); // Wait until the end to avoid memory leaks during application termination
   FLines.Free;
   FEnvironment.Free;
-  fEncoding.Free;
+  if not TEncoding.IsStandardEncoding(fEncoding) then
+    fEncoding.Free;
   inherited Destroy;
 end;
 
@@ -1020,13 +1074,19 @@ begin
   end;
 end;
 
-procedure TDosCommand.Stop;
+procedure TDosCommand.Stop(Wait: Boolean);
 begin
   if (FThread <> nil) then
   begin
-    FThread.Terminate; // by sirius
-    // FThread.WaitFor; // by sirius2
-    // FreeAndNil(FThread);
+    if Wait then
+    begin
+      FThread.FreeOnTerminate := False;
+      FThread.Terminate;
+      FThread.WaitFor;
+      FreeAndNil(FThread);
+    end
+    else
+      FThread.Terminate;
   end;
 end;
 
@@ -1232,9 +1292,9 @@ end;
 
 destructor TReadPipe.Destroy;
 begin
+  inherited Destroy;
   FEvent.Free;
   FSyncString.Free;
-  inherited Destroy;
 end;
 
 procedure TReadPipe.Execute;
@@ -1277,8 +1337,6 @@ begin
 end;
 
 procedure TReadPipe.Terminate;
-const
-  fin: AnsiString = #0;
 var
   bwrite: Cardinal;
 begin
